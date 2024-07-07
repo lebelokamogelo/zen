@@ -1,6 +1,6 @@
 use std::{
     error::Error,
-    io::{self, stdout, Write},
+    io::{stdout, Write},
 };
 
 use crossterm::{
@@ -10,12 +10,14 @@ use crossterm::{
 };
 
 enum Action {
+    Quit,
+
     MoveUp,
     MoveDown,
     MoveLeft,
     MoveRight,
 
-    Quit,
+    Char(char),
 
     EnterMode(Mode),
 }
@@ -25,96 +27,111 @@ enum Mode {
     Insert,
 }
 
-fn handle_event(
-    cx: &mut u16,
-    stdout: &mut io::Stdout,
-    mode: &Mode,
-    e: event::Event,
-) -> Result<Option<Action>, Box<dyn Error>> {
-    match mode {
-        Mode::Normal => handle_normal_mode(e),
-        Mode::Insert => handle_insert_mode(cx, stdout, e),
-    }
+struct Editor {
+    cx: u16,
+    cy: u16,
+    mode: Mode,
 }
 
-fn handle_normal_mode(e: event::Event) -> Result<Option<Action>, Box<dyn Error>> {
-    match e {
-        event::Event::Key(event) => match event.code {
-            event::KeyCode::Char('q') => Ok(Some(Action::Quit)),
-            event::KeyCode::Up => Ok(Some(Action::MoveUp)),
-            event::KeyCode::Down => Ok(Some(Action::MoveDown)),
-            event::KeyCode::Left => Ok(Some(Action::MoveLeft)),
-            event::KeyCode::Right => Ok(Some(Action::MoveRight)),
-            event::KeyCode::Char('i') => Ok(Some(Action::EnterMode(Mode::Insert))),
-
-            _ => Ok(None),
-        },
-        _ => Ok(None),
+impl Editor {
+    pub fn new() -> Self {
+        Editor {
+            cx: 0,
+            cy: 0,
+            mode: Mode::Normal,
+        }
     }
-}
 
-fn handle_insert_mode(
-    cx: &mut u16,
-    stdout: &mut io::Stdout,
-    e: event::Event,
-) -> Result<Option<Action>, Box<dyn Error>> {
-    match e {
-        event::Event::Key(event) => match event.code {
-            event::KeyCode::Esc => Ok(Some(Action::EnterMode(Mode::Normal))),
-            event::KeyCode::Char(c) => {
-                stdout.queue(style::Print(c))?;
-                *cx += 1u16;
-                Ok(None)
+    pub fn draw(&self, stdout: &mut std::io::Stdout) -> Result<(), Box<dyn Error>> {
+        stdout.queue(cursor::MoveTo(self.cx, self.cy))?;
+        stdout.flush()?;
+
+        Ok(())
+    }
+
+    pub fn run(&mut self) -> Result<(), Box<dyn Error>> {
+        let mut stdout = stdout();
+
+        terminal::enable_raw_mode()?;
+        stdout
+            .execute(terminal::EnterAlternateScreen)?
+            .execute(terminal::Clear(terminal::ClearType::All))?;
+
+        loop {
+            self.draw(&mut stdout)?;
+            if let Some(action) = self.handle_event(read()?)? {
+                match action {
+                    Action::Quit => break,
+                    Action::MoveUp => {
+                        self.cy = self.cy.saturating_sub(1);
+                    }
+                    Action::MoveDown => {
+                        self.cy += 1u16;
+                    }
+                    Action::MoveLeft => {
+                        self.cx = self.cx.saturating_sub(1);
+                    }
+                    Action::MoveRight => {
+                        self.cx += 1u16;
+                    }
+                    Action::EnterMode(nmode) => {
+                        self.mode = nmode;
+                    }
+                    Action::Char(c) => {
+                        stdout.queue(cursor::MoveTo(self.cx, self.cy))?;
+                        stdout.queue(style::Print(c))?;
+                        self.cx += 1;
+                    }
+                }
             }
-            _ => Ok(None),
-        },
-        _ => Ok(None),
+        }
+
+        stdout.execute(terminal::LeaveAlternateScreen)?;
+        terminal::disable_raw_mode()?;
+
+        Ok(())
+    }
+
+    fn handle_event(&mut self, e: event::Event) -> Result<Option<Action>, Box<dyn Error>> {
+        match self.mode {
+            Mode::Normal => self.handle_normal_event(e),
+            Mode::Insert => self.handle_insert_event(e),
+        }
+    }
+
+    fn handle_normal_event(&self, e: event::Event) -> Result<Option<Action>, Box<dyn Error>> {
+        let action = match e {
+            event::Event::Key(event) => match event.code {
+                event::KeyCode::Char('q') => Some(Action::Quit),
+                event::KeyCode::Up => Some(Action::MoveUp),
+                event::KeyCode::Down => Some(Action::MoveDown),
+                event::KeyCode::Left => Some(Action::MoveLeft),
+                event::KeyCode::Right => Some(Action::MoveRight),
+                event::KeyCode::Char('i') => Some(Action::EnterMode(Mode::Insert)),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        Ok(action)
+    }
+
+    fn handle_insert_event(&self, e: event::Event) -> Result<Option<Action>, Box<dyn Error>> {
+        let action = match e {
+            event::Event::Key(event) => match event.code {
+                event::KeyCode::Esc => Some(Action::EnterMode(Mode::Normal)),
+                event::KeyCode::Char(c) => Some(Action::Char(c)),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        Ok(action)
     }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut stdout = stdout();
-    let mut mode = Mode::Normal;
-
-    // cursor coordinates
-    let mut cx = 0;
-    let mut cy = 0;
-
-    terminal::enable_raw_mode().unwrap();
-    _ = stdout.execute(terminal::EnterAlternateScreen);
-
-    _ = stdout.execute(terminal::Clear(terminal::ClearType::All));
-
-    loop {
-        _ = stdout.queue(cursor::MoveTo(cx, cy));
-        _ = stdout.flush();
-
-        if let Some(action) = handle_event(&mut cx, &mut stdout, &mode, read()?).unwrap() {
-            match action {
-                Action::Quit => break,
-                Action::MoveUp => {
-                    cy = cy.saturating_sub(1);
-                }
-                Action::MoveDown => {
-                    cy += 1u16;
-                }
-                Action::MoveLeft => {
-                    cx = cx.saturating_sub(1);
-                }
-                Action::MoveRight => {
-                    cx += 1u16;
-                }
-                Action::EnterMode(nmode) => {
-                    mode = nmode;
-                }
-
-                _ => {}
-            }
-        };
-    }
-
-    _ = stdout.execute(terminal::LeaveAlternateScreen);
-    terminal::disable_raw_mode().unwrap();
-
+    let mut editor = Editor::new();
+    _ = editor.run();
     Ok(())
 }
