@@ -1,12 +1,14 @@
 use std::{
     error::Error,
     io::{stdout, Write},
+    u16,
 };
 
 use crossterm::{
     cursor,
     event::{self, read},
-    style, terminal, ExecutableCommand, QueueableCommand,
+    style::{self, Stylize},
+    terminal, ExecutableCommand, QueueableCommand,
 };
 
 enum Action {
@@ -22,43 +24,103 @@ enum Action {
     EnterMode(Mode),
 }
 
+#[derive(Debug)]
 enum Mode {
     Normal,
     Insert,
 }
 
-struct Editor {
+struct TextEditor {
+    stdout: std::io::Stdout,
+    size: (u16, u16),
     cx: u16,
     cy: u16,
     mode: Mode,
 }
 
-impl Editor {
+impl Drop for TextEditor {
+    fn drop(&mut self) {
+        self.stdout.execute(terminal::LeaveAlternateScreen).unwrap();
+        terminal::disable_raw_mode().unwrap();
+    }
+}
+
+impl TextEditor {
     pub fn new() -> Self {
-        Editor {
+        let mut stdout = stdout();
+
+        terminal::enable_raw_mode().unwrap();
+        stdout
+            .execute(terminal::EnterAlternateScreen)
+            .unwrap()
+            .execute(terminal::Clear(terminal::ClearType::All))
+            .unwrap();
+
+        TextEditor {
+            stdout,
             cx: 0,
             cy: 0,
             mode: Mode::Normal,
+            size: terminal::size().unwrap(),
         }
     }
 
-    pub fn draw(&self, stdout: &mut std::io::Stdout) -> Result<(), Box<dyn Error>> {
-        stdout.queue(cursor::MoveTo(self.cx, self.cy))?;
-        stdout.flush()?;
+    pub fn draw(&mut self) -> Result<(), Box<dyn Error>> {
+        _ = self.statusline()?;
+        self.stdout.queue(cursor::MoveTo(self.cx, self.cy))?;
+        self.stdout.flush()?;
+
+        Ok(())
+    }
+
+    pub fn statusline(&mut self) -> Result<(), Box<dyn Error>> {
+        let mode = format!(" {:?} ", self.mode);
+
+        let cposition = format!(" {}:{} ", self.cy, self.cx);
+
+        self.stdout.queue(cursor::MoveTo(0, self.size.1 - 1))?;
+        self.stdout.queue(style::PrintStyledContent(
+            mode.to_uppercase()
+                .bold()
+                .with(style::Color::Rgb { r: 0, g: 0, b: 0 })
+                .on(style::Color::Rgb {
+                    r: 184,
+                    g: 144,
+                    b: 243,
+                }),
+        ))?;
+        self.stdout.queue(style::PrintStyledContent(
+            format!(
+                "{:^width$}",
+                "",
+                width = (self.size.0 - cposition.len() as u16 - mode.len() as u16) as usize
+            )
+            .on(style::Color::Rgb {
+                r: 37,
+                g: 37,
+                b: 37,
+            }),
+        ))?;
+
+        self.stdout.queue(style::PrintStyledContent(
+            cposition
+                .bold()
+                .with(style::Color::Rgb { r: 0, g: 0, b: 0 })
+                .on(style::Color::Rgb {
+                    r: 184,
+                    g: 144,
+                    b: 243,
+                }),
+        ))?;
+
+        self.stdout.flush()?;
 
         Ok(())
     }
 
     pub fn run(&mut self) -> Result<(), Box<dyn Error>> {
-        let mut stdout = stdout();
-
-        terminal::enable_raw_mode()?;
-        stdout
-            .execute(terminal::EnterAlternateScreen)?
-            .execute(terminal::Clear(terminal::ClearType::All))?;
-
         loop {
-            self.draw(&mut stdout)?;
+            self.draw()?;
             if let Some(action) = self.handle_event(read()?)? {
                 match action {
                     Action::Quit => break,
@@ -74,25 +136,26 @@ impl Editor {
                     Action::MoveRight => {
                         self.cx += 1u16;
                     }
-                    Action::EnterMode(nmode) => {
-                        self.mode = nmode;
+                    Action::EnterMode(mode) => {
+                        self.mode = mode;
                     }
                     Action::Char(c) => {
-                        stdout.queue(cursor::MoveTo(self.cx, self.cy))?;
-                        stdout.queue(style::Print(c))?;
+                        self.stdout.queue(cursor::MoveTo(self.cx, self.cy))?;
+                        self.stdout.queue(style::Print(c))?;
                         self.cx += 1;
                     }
                 }
             }
         }
 
-        stdout.execute(terminal::LeaveAlternateScreen)?;
-        terminal::disable_raw_mode()?;
-
         Ok(())
     }
 
     fn handle_event(&mut self, e: event::Event) -> Result<Option<Action>, Box<dyn Error>> {
+        if matches!(e, event::Event::Resize(_, _)) {
+            self.size = terminal::size()?
+        }
+
         match self.mode {
             Mode::Normal => self.handle_normal_event(e),
             Mode::Insert => self.handle_insert_event(e),
@@ -131,7 +194,7 @@ impl Editor {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut editor = Editor::new();
+    let mut editor = TextEditor::new();
     _ = editor.run();
     Ok(())
 }
