@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     io::{stdout, Write},
-    u16,
+    usize,
 };
 
 use crossterm::{
@@ -32,6 +32,7 @@ enum Mode {
 
 struct TextEditor {
     stdout: std::io::Stdout,
+    buffer: Buffer,
     size: (u16, u16),
     cx: u16,
     cy: u16,
@@ -46,7 +47,7 @@ impl Drop for TextEditor {
 }
 
 impl TextEditor {
-    pub fn new() -> Self {
+    pub fn new(buffer: Buffer) -> Self {
         let mut stdout = stdout();
 
         terminal::enable_raw_mode().unwrap();
@@ -58,6 +59,7 @@ impl TextEditor {
 
         TextEditor {
             stdout,
+            buffer,
             cx: 0,
             cy: 0,
             mode: Mode::Normal,
@@ -66,11 +68,19 @@ impl TextEditor {
     }
 
     pub fn draw(&mut self) -> Result<(), Box<dyn Error>> {
+        _ = self.draw_buffer();
         _ = self.statusline()?;
         self.stdout.queue(cursor::MoveTo(self.cx, self.cy))?;
         self.stdout.flush()?;
 
         Ok(())
+    }
+
+    fn draw_buffer(&mut self) {
+        for (i, line) in self.buffer.lines.iter().enumerate() {
+            self.stdout.queue(cursor::MoveTo(0, i as u16)).unwrap();
+            self.stdout.queue(style::Print(line)).unwrap();
+        }
     }
 
     pub fn statusline(&mut self) -> Result<(), Box<dyn Error>> {
@@ -91,8 +101,8 @@ impl TextEditor {
         ))?;
         self.stdout.queue(style::PrintStyledContent(
             format!(
-                "{:^width$}",
-                "",
+                "{:width$}",
+                format!(" {}", self.buffer.file),
                 width = (self.size.0 - cposition.len() as u16 - mode.len() as u16) as usize
             )
             .on(style::Color::Rgb {
@@ -118,6 +128,12 @@ impl TextEditor {
         Ok(())
     }
 
+    fn line(&self) -> u16 {
+        self.buffer
+            .line(self.cy as usize)
+            .map_or(0, |s| s.len() as u16)
+    }
+
     pub fn run(&mut self) -> Result<(), Box<dyn Error>> {
         loop {
             self.draw()?;
@@ -126,15 +142,17 @@ impl TextEditor {
                     Action::Quit => break,
                     Action::MoveUp => {
                         self.cy = self.cy.saturating_sub(1);
+                        self.cx = self.cx.min(self.line());
                     }
                     Action::MoveDown => {
-                        self.cy += 1u16;
+                        self.cy += 1;
+                        self.cx = self.cx.min(self.line());
                     }
                     Action::MoveLeft => {
                         self.cx = self.cx.saturating_sub(1);
                     }
                     Action::MoveRight => {
-                        self.cx += 1u16;
+                        self.cx = (self.cx + 1).min(self.line()).min(self.size.0);
                     }
                     Action::EnterMode(mode) => {
                         self.mode = mode;
@@ -150,7 +168,6 @@ impl TextEditor {
 
         Ok(())
     }
-
     fn handle_event(&mut self, e: event::Event) -> Result<Option<Action>, Box<dyn Error>> {
         if matches!(e, event::Event::Resize(_, _)) {
             self.size = terminal::size()?
@@ -183,6 +200,7 @@ impl TextEditor {
         let action = match e {
             event::Event::Key(event) => match event.code {
                 event::KeyCode::Esc => Some(Action::EnterMode(Mode::Normal)),
+
                 event::KeyCode::Char(c) => Some(Action::Char(c)),
                 _ => None,
             },
@@ -193,8 +211,31 @@ impl TextEditor {
     }
 }
 
+struct Buffer {
+    file: String,
+    lines: Vec<String>,
+}
+
+impl Buffer {
+    fn new(file: String) -> Self {
+        let contents = std::fs::read_to_string(file.clone()).unwrap_or_default();
+
+        let lines = contents.lines().map(|line| line.to_string()).collect();
+        Self { file, lines }
+    }
+
+    fn line(&self, line: usize) -> Option<String> {
+        if self.lines.len() >= line + 1 {
+            return Some(self.lines[line].clone());
+        }
+        None
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut editor = TextEditor::new();
+    let file = std::env::args().nth(1);
+
+    let mut editor = TextEditor::new(Buffer::new(file.unwrap_or("Empty".to_string())));
     _ = editor.run();
     Ok(())
 }
