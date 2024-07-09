@@ -12,16 +12,15 @@ use crossterm::{
 };
 
 enum Action {
-    Quit,
-
     MoveUp,
     MoveDown,
     MoveLeft,
     MoveRight,
 
     Char(char),
-
     EnterMode(Mode),
+
+    Quit,
 }
 
 #[derive(Debug)]
@@ -37,6 +36,7 @@ struct TextEditor {
     cx: u16,
     cy: u16,
     mode: Mode,
+    sv: usize,
 }
 
 impl Drop for TextEditor {
@@ -64,6 +64,7 @@ impl TextEditor {
             cy: 0,
             mode: Mode::Normal,
             size: terminal::size().unwrap(),
+            sv: 0,
         }
     }
 
@@ -77,16 +78,23 @@ impl TextEditor {
     }
 
     fn draw_buffer(&mut self) {
-        for (i, line) in self.buffer.lines.iter().enumerate() {
-            self.stdout.queue(cursor::MoveTo(0, i as u16)).unwrap();
-            self.stdout.queue(style::Print(line)).unwrap();
+        for i in 0..self.buffer.lines.len() as u16 {
+            self.stdout.queue(cursor::MoveTo(0, i)).unwrap();
+            self.stdout
+                .queue(style::Print(format!(
+                    "{:<width$}",
+                    self.buffer
+                        .get(i as usize + self.sv)
+                        .unwrap_or("".to_string()),
+                    width = self.size.0 as usize
+                )))
+                .unwrap();
         }
     }
 
     pub fn statusline(&mut self) -> Result<(), Box<dyn Error>> {
         let mode = format!(" {:?} ", self.mode);
-
-        let cposition = format!(" {}:{} ", self.cy, self.cx);
+        let cpos = format!(" {}:{} ", self.cy + self.sv as u16, self.cx);
 
         self.stdout.queue(cursor::MoveTo(0, self.size.1 - 1))?;
         self.stdout.queue(style::PrintStyledContent(
@@ -103,7 +111,7 @@ impl TextEditor {
             format!(
                 "{:width$}",
                 format!(" {}", self.buffer.file),
-                width = (self.size.0 - cposition.len() as u16 - mode.len() as u16) as usize
+                width = (self.size.0 - cpos.len() as u16 - mode.len() as u16) as usize
             )
             .on(style::Color::Rgb {
                 r: 37,
@@ -113,8 +121,7 @@ impl TextEditor {
         ))?;
 
         self.stdout.queue(style::PrintStyledContent(
-            cposition
-                .bold()
+            cpos.bold()
                 .with(style::Color::Rgb { r: 0, g: 0, b: 0 })
                 .on(style::Color::Rgb {
                     r: 184,
@@ -130,29 +137,44 @@ impl TextEditor {
 
     fn line(&self) -> u16 {
         self.buffer
-            .line(self.cy as usize)
+            .line(self.cy as usize + self.sv)
             .map_or(0, |s| s.len() as u16)
+    }
+
+    fn bounds(&mut self) {
+        self.cx = self.cx.min(self.line());
+
+        if self.sv + self.cy as usize > self.buffer.lines.len() {
+            self.cy = self.buffer.lines.len() as u16 - self.sv as u16;
+        }
     }
 
     pub fn run(&mut self) -> Result<(), Box<dyn Error>> {
         loop {
+            self.bounds();
             self.draw()?;
             if let Some(action) = self.handle_event(read()?)? {
                 match action {
                     Action::Quit => break,
                     Action::MoveUp => {
-                        self.cy = self.cy.saturating_sub(1);
-                        self.cx = self.cx.min(self.line());
+                        if self.sv > 0 {
+                            self.sv -= 1;
+                        } else {
+                            self.cy = self.cy.saturating_sub(1);
+                        }
                     }
                     Action::MoveDown => {
                         self.cy += 1;
-                        self.cx = self.cx.min(self.line());
+                        if self.cy >= self.size.1 - 1 {
+                            self.cy -= 1;
+                            self.sv += 1;
+                        }
                     }
                     Action::MoveLeft => {
                         self.cx = self.cx.saturating_sub(1);
                     }
                     Action::MoveRight => {
-                        self.cx = (self.cx + 1).min(self.line()).min(self.size.0);
+                        self.cx += 1;
                     }
                     Action::EnterMode(mode) => {
                         self.mode = mode;
@@ -222,6 +244,13 @@ impl Buffer {
 
         let lines = contents.lines().map(|line| line.to_string()).collect();
         Self { file, lines }
+    }
+
+    fn get(&self, index: usize) -> Option<String> {
+        if self.lines.len() > index {
+            return Some(self.lines[index].clone());
+        }
+        None
     }
 
     fn line(&self, line: usize) -> Option<String> {
