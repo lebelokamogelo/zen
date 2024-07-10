@@ -20,6 +20,12 @@ enum Action {
     Char(char),
     EnterMode(Mode),
 
+    MoveEnd,
+    MoveHome,
+
+    PageDown,
+    PageUp,
+
     Quit,
 }
 
@@ -94,7 +100,7 @@ impl TextEditor {
 
     pub fn statusline(&mut self) -> Result<(), Box<dyn Error>> {
         let mode = format!(" {:?} ", self.mode);
-        let cpos = format!(" {}:{} ", self.cy + self.sv as u16, self.cx);
+        let cpos = format!(" {}:{}", self.cy + self.sv as u16, self.cx);
 
         self.stdout.queue(cursor::MoveTo(0, self.size.1 - 1))?;
         self.stdout.queue(style::PrintStyledContent(
@@ -135,16 +141,16 @@ impl TextEditor {
         Ok(())
     }
 
-    fn line(&self) -> u16 {
+    fn current_line_len(&self) -> u16 {
         self.buffer
             .line(self.cy as usize + self.sv)
             .map_or(0, |s| s.len() as u16)
     }
 
     fn bounds(&mut self) {
-        self.cx = self.cx.min(self.line());
+        self.cx = self.cx.min(self.current_line_len());
 
-        if self.sv + self.cy as usize > self.buffer.lines.len() {
+        if self.sv + self.cy as usize >= self.buffer.lines.len() {
             self.cy = self.buffer.lines.len() as u16 - self.sv as u16;
         }
     }
@@ -157,14 +163,18 @@ impl TextEditor {
                 match action {
                     Action::Quit => break,
                     Action::MoveUp => {
-                        if self.sv > 0 {
-                            self.sv -= 1;
+                        if self.cy == 0 {
+                            if self.sv > 0 {
+                                self.sv -= 1;
+                            }
                         } else {
                             self.cy = self.cy.saturating_sub(1);
                         }
                     }
                     Action::MoveDown => {
-                        self.cy += 1;
+                        if self.buffer.lines.len() as u16 > self.cy + self.sv as u16 {
+                            self.cy += 1;
+                        }
                         if self.cy >= self.size.1 - 1 {
                             self.cy -= 1;
                             self.sv += 1;
@@ -176,9 +186,14 @@ impl TextEditor {
                     Action::MoveRight => {
                         self.cx += 1;
                     }
+
+                    Action::PageUp => self.cy = 0,
+                    Action::PageDown => self.cy = self.size.1 - 2,
                     Action::EnterMode(mode) => {
                         self.mode = mode;
                     }
+                    Action::MoveHome => self.cx = 0,
+                    Action::MoveEnd => self.cx = self.current_line_len(),
                     Action::Char(c) => {
                         self.stdout.queue(cursor::MoveTo(self.cx, self.cy))?;
                         self.stdout.queue(style::Print(c))?;
@@ -210,6 +225,10 @@ impl TextEditor {
                 event::KeyCode::Left => Some(Action::MoveLeft),
                 event::KeyCode::Right => Some(Action::MoveRight),
                 event::KeyCode::Char('i') => Some(Action::EnterMode(Mode::Insert)),
+                event::KeyCode::Char('b') => Some(Action::PageUp),
+                event::KeyCode::Char('f') => Some(Action::PageDown),
+                event::KeyCode::Char('0') => Some(Action::MoveHome),
+                event::KeyCode::Char('$') => Some(Action::MoveEnd),
                 _ => None,
             },
             _ => None,
