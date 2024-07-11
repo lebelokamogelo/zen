@@ -17,7 +17,9 @@ enum Action {
     MoveLeft,
     MoveRight,
 
-    Char(char),
+    Insert(char),
+    Delete,
+
     EnterMode(Mode),
 
     MoveEnd,
@@ -143,7 +145,7 @@ impl TextEditor {
 
     fn current_line_len(&self) -> u16 {
         self.buffer
-            .line(self.cy as usize + self.sv)
+            .get(self.cy as usize + self.sv)
             .map_or(0, |s| s.len() as u16)
     }
 
@@ -194,10 +196,16 @@ impl TextEditor {
                     }
                     Action::MoveHome => self.cx = 0,
                     Action::MoveEnd => self.cx = self.current_line_len(),
-                    Action::Char(c) => {
+                    Action::Insert(c) => {
                         self.stdout.queue(cursor::MoveTo(self.cx, self.cy))?;
-                        self.stdout.queue(style::Print(c))?;
+                        self.buffer.insert(self.cx, self.cy + self.sv as u16, c);
                         self.cx += 1;
+                    }
+
+                    Action::Delete => {
+                        if self.buffer.get(self.cy as usize + self.sv).unwrap().len() > 0 {
+                            self.buffer.remove(self.cx, self.cy + self.sv as u16)
+                        }
                     }
                 }
             }
@@ -229,6 +237,7 @@ impl TextEditor {
                 event::KeyCode::Char('f') => Some(Action::PageDown),
                 event::KeyCode::Char('0') => Some(Action::MoveHome),
                 event::KeyCode::Char('$') => Some(Action::MoveEnd),
+                event::KeyCode::Char('x') => Some(Action::Delete),
                 _ => None,
             },
             _ => None,
@@ -242,7 +251,7 @@ impl TextEditor {
             event::Event::Key(event) => match event.code {
                 event::KeyCode::Esc => Some(Action::EnterMode(Mode::Normal)),
 
-                event::KeyCode::Char(c) => Some(Action::Char(c)),
+                event::KeyCode::Char(c) => Some(Action::Insert(c)),
                 _ => None,
             },
             _ => None,
@@ -259,24 +268,36 @@ struct Buffer {
 
 impl Buffer {
     fn new(file: String) -> Self {
-        let contents = std::fs::read_to_string(file.clone()).unwrap_or_default();
+        let lines = std::fs::read_to_string(file.clone())
+            .unwrap_or_default()
+            .lines()
+            .map(|line| line.to_string())
+            .collect();
 
-        let lines = contents.lines().map(|line| line.to_string()).collect();
         Self { file, lines }
     }
 
-    fn get(&self, index: usize) -> Option<String> {
-        if self.lines.len() > index {
-            return Some(self.lines[index].clone());
-        }
-        None
-    }
-
-    fn line(&self, line: usize) -> Option<String> {
+    fn get(&self, line: usize) -> Option<String> {
         if self.lines.len() >= line + 1 {
             return Some(self.lines[line].clone());
         }
         None
+    }
+
+    fn insert(&mut self, x: u16, y: u16, c: char) {
+        if self.lines.len() == y as usize {
+            self.lines.resize(y as usize + 1, String::new());
+        }
+
+        if let Some(line) = self.lines.get_mut(y as usize) {
+            line.insert(x as usize, c);
+        }
+    }
+
+    fn remove(&mut self, x: u16, y: u16) {
+        if let Some(line) = self.lines.get_mut(y as usize) {
+            line.remove(x as usize);
+        }
     }
 }
 
