@@ -19,6 +19,10 @@ enum Action {
 
     Insert(char),
     Delete,
+    DeleteLine,
+
+    Undo,
+    UndoChar(u16, u16, char),
 
     EnterMode(Mode),
 
@@ -45,6 +49,8 @@ struct TextEditor {
     cy: u16,
     mode: Mode,
     sv: usize,
+    command_wait: Option<char>,
+    undo: Vec<Action>
 }
 
 impl Drop for TextEditor {
@@ -73,6 +79,8 @@ impl TextEditor {
             mode: Mode::Normal,
             size: terminal::size().unwrap(),
             sv: 0,
+            command_wait: None,
+            undo: vec![]
         }
     }
 
@@ -203,10 +211,38 @@ impl TextEditor {
                     }
 
                     Action::Delete => {
-                        if self.buffer.get(self.cy as usize + self.sv).unwrap().len() > 0 {
-                            self.buffer.remove(self.cx, self.cy + self.sv as u16)
+                        let line_cy = self.cy as usize + self.sv;
+                        let line =self.buffer.get(line_cy).unwrap();
+                    
+                        if line.len() > 0 {
+                            self.buffer.remove(self.cx, self.cy + self.sv as u16);
+                            self.undo.push(Action::UndoChar(self.cx, line_cy as u16, line.chars().nth(self.cx as usize).unwrap()))
                         }
                     }
+
+                    Action::DeleteLine => {
+                        if let Some(command) = self.command_wait {
+                            if matches!(command, 'd'){
+                                let line = self.cy + self.sv as u16;
+                                self.buffer.remove_line(line)
+                            }
+                            
+                        }else{
+                            self.command_wait = Some('d')
+                        }  
+                    }
+
+                    Action::Undo => {
+                        match self.undo.pop() {
+                            Some(Action::UndoChar(x, y, content)) => {
+                               self.buffer.insert(x, y, content) 
+                            }
+                            _ => {}
+                        }
+                        
+                            
+                    }
+                    _ => {}
                 }
             }
         }
@@ -224,7 +260,7 @@ impl TextEditor {
         }
     }
 
-    fn handle_normal_event(&self, e: event::Event) -> Result<Option<Action>, Box<dyn Error>> {
+    fn handle_normal_event(&mut self, e: event::Event) -> Result<Option<Action>, Box<dyn Error>> {
         let action = match e {
             event::Event::Key(event) => match event.code {
                 event::KeyCode::Char('q') => Some(Action::Quit),
@@ -238,6 +274,9 @@ impl TextEditor {
                 event::KeyCode::Char('0') => Some(Action::MoveHome),
                 event::KeyCode::Char('$') => Some(Action::MoveEnd),
                 event::KeyCode::Char('x') => Some(Action::Delete),
+                event::KeyCode::Char('d') => Some(Action::DeleteLine),
+                event::KeyCode::Char('u') => Some(Action::Undo),
+                  
                 _ => None,
             },
             _ => None,
@@ -298,6 +337,10 @@ impl Buffer {
         if let Some(line) = self.lines.get_mut(y as usize) {
             line.remove(x as usize);
         }
+    }
+
+    fn remove_line(&mut self, y: u16){
+        self.lines.remove(y as usize);
     }
 }
 
