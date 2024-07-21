@@ -18,11 +18,16 @@ enum Action {
     MoveRight,
 
     Insert(char),
-    Delete,
+    InsertLineBelow,
+    InsertLineAbove,
+
     DeleteLine,
+    DeleteChar,
+
+    InsertChar(u16, u16, char),
+    InsertLine(u16, String),
 
     Undo,
-    UndoChar(u16, u16, char),
 
     EnterMode(Mode),
 
@@ -50,7 +55,7 @@ struct TextEditor {
     mode: Mode,
     sv: usize,
     command_wait: Option<char>,
-    undo: Vec<Action>
+    undo: Vec<Action>,
 }
 
 impl Drop for TextEditor {
@@ -80,7 +85,7 @@ impl TextEditor {
             size: terminal::size().unwrap(),
             sv: 0,
             command_wait: None,
-            undo: vec![]
+            undo: vec![],
         }
     }
 
@@ -94,6 +99,8 @@ impl TextEditor {
     }
 
     fn draw_buffer(&mut self) {
+        _ = stdout().execute(terminal::Clear(terminal::ClearType::All));
+
         for i in 0..self.buffer.lines.len() as u16 {
             self.stdout.queue(cursor::MoveTo(0, i)).unwrap();
             self.stdout
@@ -161,7 +168,11 @@ impl TextEditor {
         self.cx = self.cx.min(self.current_line_len());
 
         if self.sv + self.cy as usize >= self.buffer.lines.len() {
-            self.cy = self.buffer.lines.len() as u16 - self.sv as u16;
+            if self.buffer.lines.len() > 0 {
+                self.cy = self.buffer.lines.len() as u16 - self.sv as u16 - 1;
+            } else {
+                self.cy = self.buffer.lines.len() as u16 - self.sv as u16;
+            }
         }
     }
 
@@ -210,38 +221,58 @@ impl TextEditor {
                         self.cx += 1;
                     }
 
-                    Action::Delete => {
-                        let line_cy = self.cy as usize + self.sv;
-                        let line =self.buffer.get(line_cy).unwrap();
-                    
-                        if line.len() > 0 {
-                            self.buffer.remove(self.cx, self.cy + self.sv as u16);
-                            self.undo.push(Action::UndoChar(self.cx, line_cy as u16, line.chars().nth(self.cx as usize).unwrap()))
+                    Action::InsertLineBelow => {
+                        let line = self.cy as usize + self.sv + 1;
+                        self.buffer.lines.insert(line, String::new());
+
+                        self.cy = line as u16;
+                    }
+
+                    Action::InsertLineAbove => {
+                        let line = self.cy as usize + self.sv;
+                        self.buffer.lines.insert(line, String::new());
+                    }
+
+                    Action::DeleteChar => {
+                        let line = self.cy + self.sv as u16;
+                        let line_str = self.buffer.get(line as usize).unwrap();
+
+                        if line_str.len() > 0 {
+                            self.buffer.remove(self.cx, line);
+                            self.undo.push(Action::InsertChar(
+                                self.cx,
+                                line,
+                                line_str.chars().nth(self.cx as usize).unwrap(),
+                            ))
                         }
                     }
 
                     Action::DeleteLine => {
-                        if let Some(command) = self.command_wait {
-                            if matches!(command, 'd'){
-                                let line = self.cy + self.sv as u16;
-                                self.buffer.remove_line(line)
-                            }
-                            
-                        }else{
-                            self.command_wait = Some('d')
-                        }  
+                        let line = self.cy + self.sv as u16;
+                        let line_str = self.buffer.get(line as usize).unwrap();
+                        match self.command_wait {
+                            Some(command) => match command {
+                                'd' => {
+                                    if self.buffer.lines.len() > 0 {
+                                        self.buffer.lines.remove(line as usize);
+                                        self.undo.push(Action::InsertLine(line, line_str));
+                                        self.command_wait = None
+                                    }
+                                }
+                                _ => {}
+                            },
+                            None => self.command_wait = Some('d'),
+                        }
                     }
 
-                    Action::Undo => {
-                        match self.undo.pop() {
-                            Some(Action::UndoChar(x, y, content)) => {
-                               self.buffer.insert(x, y, content) 
-                            }
-                            _ => {}
+                    Action::Undo => match self.undo.pop() {
+                        Some(Action::InsertLine(line, content)) => {
+                            self.buffer.insert_line(line as usize, content)
                         }
-                        
-                            
-                    }
+                        Some(Action::InsertChar(x, y, c)) => self.buffer.insert(x, y, c),
+                        _ => {}
+                    },
+
                     _ => {}
                 }
             }
@@ -273,10 +304,11 @@ impl TextEditor {
                 event::KeyCode::Char('f') => Some(Action::PageDown),
                 event::KeyCode::Char('0') => Some(Action::MoveHome),
                 event::KeyCode::Char('$') => Some(Action::MoveEnd),
-                event::KeyCode::Char('x') => Some(Action::Delete),
                 event::KeyCode::Char('d') => Some(Action::DeleteLine),
+                event::KeyCode::Char('x') => Some(Action::DeleteChar),
                 event::KeyCode::Char('u') => Some(Action::Undo),
-                  
+                event::KeyCode::Char('o') => Some(Action::InsertLineBelow),
+                event::KeyCode::Char('O') => Some(Action::InsertLineAbove),
                 _ => None,
             },
             _ => None,
@@ -333,13 +365,17 @@ impl Buffer {
         }
     }
 
+    fn insert_line(&mut self, index: usize, content: String) {
+        self.lines.insert(index, content)
+    }
+
     fn remove(&mut self, x: u16, y: u16) {
         if let Some(line) = self.lines.get_mut(y as usize) {
             line.remove(x as usize);
         }
     }
 
-    fn remove_line(&mut self, y: u16){
+    fn remove_line(&mut self, y: u16) {
         self.lines.remove(y as usize);
     }
 }
